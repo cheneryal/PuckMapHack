@@ -1,0 +1,10 @@
+C:\Users\chen_\Documents\puck_mod\MapHack\bin\Debug\net4.8\MapHack.dll
+C:\Users\chen_\Documents\puck_mod\MapHack\bin\Debug\net4.8\MapHack.pdb
+C:\Users\chen_\Documents\puck_mod\MapHack\obj\Debug\net4.8\MapHack.csproj.AssemblyReference.cache
+C:\Users\chen_\Documents\puck_mod\MapHack\obj\Debug\net4.8\MapHack.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\chen_\Documents\puck_mod\MapHack\obj\Debug\net4.8\MapHack.AssemblyInfoInputs.cache
+C:\Users\chen_\Documents\puck_mod\MapHack\obj\Debug\net4.8\MapHack.AssemblyInfo.cs
+C:\Users\chen_\Documents\puck_mod\MapHack\obj\Debug\net4.8\MapHack.csproj.CoreCompileInputs.cache
+C:\Users\chen_\Documents\puck_mod\MapHack\obj\Debug\net4.8\MapHack.sourcelink.json
+C:\Users\chen_\Documents\puck_mod\MapHack\obj\Debug\net4.8\MapHack.dll
+C:\Users\chen_\Documents\puck_mod\MapHack\obj\Debug\net4.8\MapHack.pdb
