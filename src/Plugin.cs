@@ -8,7 +8,7 @@ namespace MapHack
     public class Plugin : IPuckPlugin
     {
         public static string MOD_NAME = "MapHack";
-        public static string MOD_VERSION = "2.2.0"; // Version updated for new config structure
+        public static string MOD_VERSION = "3.0.0";
         public static string MOD_GUID = "com.example.maphack";
 
         private static readonly Harmony harmony = new Harmony(MOD_GUID);
@@ -18,14 +18,14 @@ namespace MapHack
             Log("Enabling...");
             try
             {
-                // Load the configuration using the new manager
                 ModConfig.LoadConfig();
 
-                if (SystemInfo.graphicsDeviceType != GraphicsDeviceType.Null) // Client-side check
+                if (SystemInfo.graphicsDeviceType != GraphicsDeviceType.Null)
                 {
                     Log("Applying Harmony patches...");
                     harmony.PatchAll();
-                    Log("Patches applied successfully.");
+                    MapHackUI.Initialize();
+                    Log("Patches & UI initialized successfully.");
                 }
                 else
                 {
@@ -47,6 +47,7 @@ namespace MapHack
             try
             {
                 Log("Disabling...");
+                MapHackUI.Shutdown();
                 harmony.UnpatchSelf();
                 Log("Disabled!");
                 return true;
