@@ -3,14 +3,29 @@ using System.Collections.Generic;
 using System.Globalization;
 using HarmonyLib;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UIElements;
 using UITK = UnityEngine.UIElements;
 
 namespace MapHack
 {
+    /// <summary>
+    /// Prevents the game's chat from opening on top of the MapHack settings panel while it is open.
+    /// </summary>
+    [HarmonyPatch(typeof(UIChat), "StartInput")]
+    internal static class ChatClosedWhileMapHackOpen
+    {
+        [HarmonyPrefix]
+        public static bool Prefix()
+        {
+            return !MapHackUI.PanelOpen;
+        }
+    }
+
     public sealed class MapHackUI : MonoBehaviour
     {
         public static MapHackUI Instance { get; private set; }
+        internal static bool PanelOpen => Instance != null && Instance._isVisible;
 
         private enum UiTab { Layout, Fade, Icons, Radar }
 
@@ -43,6 +58,7 @@ namespace MapHack
         private static readonly List<string> ModeOptions = new List<string> { "vanilla", "center", "top", "bottom" };
         private static readonly List<string> ColorOptions = new List<string> { "Blue", "Cyan", "Green", "Yellow", "Red", "White" };
 
+        private UITK.UIDocument _doc;
         private UITK.VisualElement _backdrop, _panel;
         private UITK.TextField _searchField;
         private string _searchQuery = "";
@@ -57,28 +73,45 @@ namespace MapHack
         private static Action _cancelSearchEdit;
         internal static bool TextEntryActive;
 
-        private bool _isOpen;
-        private CursorLockMode _savedLockMode;
-        private bool _savedCursorVisible;
+        private bool _isVisible;
+        private bool _savedCursorState;
+        private CursorLockMode _prevLockState = CursorLockMode.None;
+        private bool _prevCursorVisible;
+        private bool _savedMouseRequired;
+        private bool _prevIsMouseRequired;
 
         private static Font _uiFont;
 
         public static void Initialize()
         {
             if (Instance != null) return;
-            var go = new GameObject("MapHack_UIRunner");
+            var go = new GameObject("__MapHackUI__");
             DontDestroyOnLoad(go);
             Instance = go.AddComponent<MapHackUI>();
+            Plugin.Log($"UI Initialized. Press {ModConfig.ResolvedToggleKey} to open MapHack settings.");
         }
 
         public static void Shutdown()
         {
             if (Instance != null)
             {
-                Instance.TeardownUI();
                 Destroy(Instance.gameObject);
                 Instance = null;
             }
+        }
+
+        private void Awake()
+        {
+            Instance = this;
+        }
+
+        private void OnDestroy()
+        {
+            if (Instance == this) Instance = null;
+            if (_isVisible) Hide();
+            if (_backdrop != null) { _backdrop.RemoveFromHierarchy(); _backdrop = null; }
+            if (_panel != null) { _panel.RemoveFromHierarchy(); _panel = null; }
+            _doc = null;
         }
 
         private static Font GetUIFont()
@@ -101,59 +134,43 @@ namespace MapHack
             if (f != null) ve.style.unityFont = f;
         }
 
-        private static UITK.VisualElement Root()
+        private UITK.VisualElement Root()
         {
-            try
+            if (_doc == null)
             {
-                var ui = MonoBehaviourSingleton<UIManager>.Instance;
-                if (ui != null)
-                {
-                    var doc = ui.GetComponentInChildren<UIDocument>();
-                    if (doc != null && doc.rootVisualElement != null)
-                        return doc.rootVisualElement;
-                }
+                var ui = UnityEngine.Object.FindFirstObjectByType<UIManager>(FindObjectsInactive.Include);
+                _doc = ui != null ? ui.UIDocument
+                                  : UnityEngine.Object.FindFirstObjectByType<UITK.UIDocument>(FindObjectsInactive.Include);
             }
-            catch { }
-
-            if (MinimapPatcher.MapContainer?.panel?.visualTree != null)
-                return MinimapPatcher.MapContainer.panel.visualTree;
-
-            var anyDoc = FindFirstObjectByType<UIDocument>();
-            return anyDoc != null ? anyDoc.rootVisualElement : null;
+            return _doc != null ? _doc.rootVisualElement : null;
         }
 
         private void Update()
         {
-            if (_isOpen)
-            {
-                // Keep cursor unlocked while UI is open so sliders and buttons are clickable mid-match
-                UnityEngine.Cursor.lockState = CursorLockMode.None;
-                UnityEngine.Cursor.visible = true;
+            HandleHotkey();
+        }
 
-                if (!TextEntryActive && Input.GetKeyDown(KeyCode.Escape))
-                {
-                    Hide();
-                    return;
-                }
-            }
+        private void HandleHotkey()
+        {
+            var kb = Keyboard.current;
+            if (kb == null || IsChatOpen() || TextEntryActive) return;
 
-            if (!TextEntryActive && !IsChatFocused() && Input.GetKeyDown(ModConfig.ResolvedToggleKey))
+            if (kb[ModConfig.ResolvedToggleKey].wasPressedThisFrame)
             {
                 Toggle();
             }
+            else if (_isVisible && kb[Key.Escape].wasPressedThisFrame)
+            {
+                Hide();
+            }
         }
 
-        private static bool IsChatFocused()
+        private static bool IsChatOpen()
         {
             try
             {
-                var ui = MonoBehaviourSingleton<UIManager>.Instance;
-                if (ui != null && ui.Chat != null)
-                {
-                    var tf = Traverse.Create(ui.Chat).Field("textField").GetValue<UITK.TextField>();
-                    if (tf != null && tf.focusController?.focusedElement == tf)
-                        return true;
-                }
+                var chat = MonoBehaviourSingleton<UIManager>.Instance?.Chat;
+                if (chat != null && chat.IsFocused) return true;
             }
             catch { }
             return false;
@@ -161,7 +178,7 @@ namespace MapHack
 
         public void Toggle()
         {
-            if (_isOpen) Hide();
+            if (_isVisible) Hide();
             else Show();
         }
 
@@ -169,52 +186,85 @@ namespace MapHack
         {
             if (_panel == null || _panel.panel == null)
             {
-                TeardownUI();
+                if (_backdrop != null) { _backdrop.RemoveFromHierarchy(); _backdrop = null; }
+                if (_panel != null) { _panel.RemoveFromHierarchy(); _panel = null; }
+                _doc = null;
                 Create();
             }
             if (_panel == null) return;
 
-            if (!_isOpen)
-            {
-                _savedLockMode = UnityEngine.Cursor.lockState;
-                _savedCursorVisible = UnityEngine.Cursor.visible;
-            }
+            _prevLockState     = UnityEngine.Cursor.lockState;
+            _prevCursorVisible = UnityEngine.Cursor.visible;
+            _savedCursorState  = true;
+            UnityEngine.Cursor.lockState = CursorLockMode.None;
+            UnityEngine.Cursor.visible   = true;
 
-            _isOpen = true;
+            // Hide scoreboard if open so we capture a clean resting IsMouseRequired state
+            try
+            {
+                var sb = MonoBehaviourSingleton<UIManager>.Instance?.Scoreboard;
+                if (sb != null && sb.IsVisible) sb.Hide();
+            }
+            catch { }
+
+            SuppressPlayerInput();
+
             if (_subtitleLabel != null)
                 _subtitleLabel.text = $"Minimap & radar customization  ·  {ModConfig.ResolvedToggleKey} to toggle  ·  Esc to close";
 
             Rebuild();
+
             _backdrop.style.display = UITK.DisplayStyle.Flex;
-            _panel.style.display = UITK.DisplayStyle.Flex;
+            _panel.style.display    = UITK.DisplayStyle.Flex;
             _backdrop.BringToFront();
             _panel.BringToFront();
 
-            UnityEngine.Cursor.lockState = CursorLockMode.None;
-            UnityEngine.Cursor.visible = true;
+            _isVisible = true;
         }
 
         public void Hide()
         {
-            EndTransientEdits(true);
-            if (_backdrop != null) _backdrop.style.display = UITK.DisplayStyle.None;
-            if (_panel != null) _panel.style.display = UITK.DisplayStyle.None;
+            if (_panel == null) return;
 
-            if (_isOpen)
-            {
-                _isOpen = false;
-                UnityEngine.Cursor.lockState = _savedLockMode;
-                UnityEngine.Cursor.visible = _savedCursorVisible;
-            }
+            EndTransientEdits(true);
+
+            _backdrop.style.display = UITK.DisplayStyle.None;
+            _panel.style.display    = UITK.DisplayStyle.None;
+            _isVisible = false;
+
+            RestorePlayerInput();
+            RestoreCursor();
         }
 
-        private void TeardownUI()
+        private void SuppressPlayerInput()
         {
-            EndTransientEdits(true);
-            _backdrop?.RemoveFromHierarchy();
-            _panel?.RemoveFromHierarchy();
-            _backdrop = null;
-            _panel = null;
+            try
+            {
+                _prevIsMouseRequired = GlobalStateManager.UIState.IsMouseRequired;
+                _savedMouseRequired = true;
+                if (!_prevIsMouseRequired)
+                    GlobalStateManager.SetUIState(new Dictionary<string, object> { { "isMouseRequired", true } });
+            }
+            catch (Exception ex) { Plugin.LogError("SuppressPlayerInput failed: " + ex.Message); }
+        }
+
+        private void RestorePlayerInput()
+        {
+            if (!_savedMouseRequired) return;
+            try
+            {
+                GlobalStateManager.SetUIState(new Dictionary<string, object> { { "isMouseRequired", _prevIsMouseRequired } });
+            }
+            catch (Exception ex) { Plugin.LogError("RestorePlayerInput failed: " + ex.Message); }
+            _savedMouseRequired = false;
+        }
+
+        private void RestoreCursor()
+        {
+            if (!_savedCursorState) return;
+            UnityEngine.Cursor.lockState = _prevLockState;
+            UnityEngine.Cursor.visible   = _prevCursorVisible;
+            _savedCursorState = false;
         }
 
         private static void EndTransientEdits(bool includeSearch)
@@ -229,7 +279,7 @@ namespace MapHack
         private void Create()
         {
             var root = Root();
-            if (root == null) return;
+            if (root == null) { Plugin.Log("No UIDocument yet; panel not built."); return; }
 
             _backdrop = new UITK.VisualElement { name = "MapHack_Backdrop" };
             var bs = _backdrop.style;
