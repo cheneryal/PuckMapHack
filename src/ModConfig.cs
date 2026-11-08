@@ -7,7 +7,7 @@ namespace MapHack
 {
     public class ConfigData
     {
-        public string ToggleKey { get; set; } = "F8";
+        public string ToggleKey { get; set; } = "F7";
 
         // --- Original Icon & Ring Settings ---
         public float IconScale { get; set; } = 1.75f;
@@ -59,7 +59,7 @@ namespace MapHack
                 {
                     return key;
                 }
-                return KeyCode.F8;
+                return KeyCode.F7;
             }
         }
 
@@ -91,7 +91,7 @@ namespace MapHack
 
         public static void ResetToDefaults()
         {
-            string currentKey = Config?.ToggleKey ?? "F8";
+            string currentKey = Config?.ToggleKey ?? "F7";
             Config = new ConfigData { ToggleKey = currentKey };
             SaveConfig();
         }
