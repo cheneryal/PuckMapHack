@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("MapHack")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6929096671f4f80b88a5e37ce161867d8f157f90")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+6b603dfc6a229ef939b1714bf587a9a549ef98a9")]
 [assembly: System.Reflection.AssemblyProductAttribute("MapHack")]
 [assembly: System.Reflection.AssemblyTitleAttribute("MapHack")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

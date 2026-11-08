@@ -609,6 +609,25 @@ namespace MapHack
             return null;
         }
 
+        private static bool IsInMatchAndMinimapVisible(Dictionary<Puck, VisualElement> puckMap, IDictionary playerMap)
+        {
+            if (mapContainer == null || mapContainer.panel == null) return false;
+
+            // 1. Check if the minimap itself is hidden (e.g., on the Main Menu)
+            for (VisualElement el = mapContainer; el != null; el = el.parent)
+            {
+                if (el.resolvedStyle.display == DisplayStyle.None || el.resolvedStyle.visibility == Visibility.Hidden)
+                    return false;
+            }
+
+            // 2. Check Netcode connection state or active entities on the rink
+            var net = Unity.Netcode.NetworkManager.Singleton;
+            bool netActive = net != null && (net.IsClient || net.IsServer || net.IsConnectedClient || net.IsListening);
+            bool hasEntities = (puckMap != null && puckMap.Count > 0) || (playerMap != null && playerMap.Count > 0);
+
+            return netActive && hasEntities;
+        }
+
         private static void UpdateRadarRing(
             Vector3? refPos,
             Vector3 refForward,
@@ -617,7 +636,7 @@ namespace MapHack
             Color minHeightColor,
             Color maxHeightColor)
         {
-            if (!ModConfig.Config.RadarRingEnabled || !refPos.HasValue || mapContainer?.panel == null)
+            if (!ModConfig.Config.RadarRingEnabled || !refPos.HasValue || !IsInMatchAndMinimapVisible(puckMap, playerMap))
             {
                 if (radarRoot != null) radarRoot.style.display = DisplayStyle.None;
                 return;

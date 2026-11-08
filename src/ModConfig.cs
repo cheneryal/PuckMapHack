@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using Newtonsoft.Json;
 
 namespace MapHack
@@ -50,16 +51,18 @@ namespace MapHack
 
         public static ConfigData Config { get; private set; }
 
-        public static KeyCode ResolvedToggleKey
+        public static Key ResolvedToggleKey
         {
             get
             {
-                if (Config != null && !string.IsNullOrEmpty(Config.ToggleKey) &&
-                    Enum.TryParse<KeyCode>(Config.ToggleKey, true, out var key))
+                if (Config != null && !string.IsNullOrWhiteSpace(Config.ToggleKey) &&
+                    Enum.TryParse<Key>(Config.ToggleKey, true, out var k) &&
+                    k != Key.None &&
+                    Enum.IsDefined(typeof(Key), k))
                 {
-                    return key;
+                    return k;
                 }
-                return KeyCode.F7;
+                return Key.F7;
             }
         }
 
