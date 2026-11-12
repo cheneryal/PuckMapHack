@@ -22,14 +22,19 @@ namespace MapHack
         private static VisualElement mapContainer;
         public static VisualElement MapContainer => mapContainer;
 
-        private static bool originalStyleCaptured = false;
+        // Tracks whether MapHack is currently overriding layout/position so we never clobber vanilla settings
+        private static bool isCustomLayoutActive = false;
         private static StyleEnum<Position> origPosition;
         private static StyleLength origLeft, origRight, origTop, origBottom;
         private static StyleLength origMarginLeft, origMarginRight, origMarginTop, origMarginBottom;
         private static StyleTranslate origTranslate;
         private static StyleRotate origRotate;
         private static StyleScale origScale;
-        private static StyleFloat origOpacity;
+
+        // Tracks whether MapHack is currently overriding opacity so vanilla opacity slider works seamlessly
+        private static bool isProximityFadeActive = false;
+        private static StyleFloat vanillaInlineOpacity = new StyleFloat(StyleKeyword.Null);
+        private static float lastModSetOpacity = -1f;
 
         private class ElementBgState
         {
@@ -44,7 +49,7 @@ namespace MapHack
         private static readonly Dictionary<object, VisualElement> radarPlayerDots = new Dictionary<object, VisualElement>();
 
         private static float smoothedMapOpacity = 1.0f;
-        private static string lastAppliedMode = null;
+        private static string lastAppliedMode = "vanilla";
         private static bool lastAppliedGhost = false;
         private static float lastAppliedGhostAlpha = -1f;
         private static float lastAppliedMapScale = -1f;
@@ -240,21 +245,10 @@ namespace MapHack
                         }
                     }
 
-                    // 5. Apply Proximity Auto-Fade
+                    // 5. Apply Proximity Auto-Fade without fighting vanilla opacity setting
                     if (mapContainer != null)
                     {
-                        if (ModConfig.Config.ProximityFadeEnabled && refPos.HasValue && closestPuckDist < float.MaxValue)
-                        {
-                            float t = Mathf.InverseLerp(ModConfig.Config.FadeMinDist, ModConfig.Config.FadeMaxDist, closestPuckDist);
-                            float targetOpacity = Mathf.Lerp(ModConfig.Config.CloseOpacity, ModConfig.Config.FarOpacity, t);
-                            smoothedMapOpacity = Mathf.Lerp(smoothedMapOpacity, targetOpacity, Time.deltaTime * 10f);
-                            mapContainer.style.opacity = smoothedMapOpacity;
-                        }
-                        else if (!ModConfig.Config.ProximityFadeEnabled)
-                        {
-                            mapContainer.style.opacity = origOpacity;
-                            smoothedMapOpacity = 1.0f;
-                        }
+                        UpdateMapOpacity(refPos, closestPuckDist);
                     }
 
                     // 6. Update Idea 3: 3D-to-2D Crosshair Radar Ring
@@ -268,38 +262,86 @@ namespace MapHack
         }
 
         /// <summary>
+        /// Manages minimap opacity. When ProximityFadeEnabled is off, it does not touch inline opacity
+        /// so the vanilla game's opacity slider works without conflict. If the user changes the vanilla
+        /// opacity while ProximityFadeEnabled is on, we detect the external change and preserve it.
+        /// </summary>
+        private static void UpdateMapOpacity(Vector3? refPos, float closestPuckDist)
+        {
+            var targetEl = GetOpacityTargetElement();
+            if (targetEl == null) return;
+
+            if (ModConfig.Config.ProximityFadeEnabled)
+            {
+                // Capture vanilla inline opacity when transitioning from disabled -> enabled,
+                // OR if the game's settings menu wrote a new inline opacity since our last frame.
+                if (!isProximityFadeActive)
+                {
+                    vanillaInlineOpacity = targetEl.style.opacity;
+                    float startOpacity = targetEl.resolvedStyle.opacity;
+                    smoothedMapOpacity = startOpacity > 0.01f ? startOpacity : 1.0f;
+                    isProximityFadeActive = true;
+                }
+                else if (targetEl.style.opacity.keyword != StyleKeyword.Null &&
+                         lastModSetOpacity >= 0f &&
+                         !Mathf.Approximately(targetEl.style.opacity.value, lastModSetOpacity))
+                {
+                    // The vanilla settings menu just updated the opacity while fade was active!
+                    vanillaInlineOpacity = targetEl.style.opacity;
+                }
+
+                if (refPos.HasValue && closestPuckDist < float.MaxValue)
+                {
+                    float t = Mathf.InverseLerp(ModConfig.Config.FadeMinDist, ModConfig.Config.FadeMaxDist, closestPuckDist);
+                    float targetOpacity = Mathf.Lerp(ModConfig.Config.CloseOpacity, ModConfig.Config.FarOpacity, t);
+                    smoothedMapOpacity = Mathf.Lerp(smoothedMapOpacity, targetOpacity, Time.deltaTime * 10f);
+                    targetEl.style.opacity = smoothedMapOpacity;
+                    lastModSetOpacity = smoothedMapOpacity;
+                }
+            }
+            else if (isProximityFadeActive)
+            {
+                // Restore the exact vanilla opacity state once when turning Proximity Fade off, then hands-off!
+                targetEl.style.opacity = vanillaInlineOpacity;
+                isProximityFadeActive = false;
+                lastModSetOpacity = -1f;
+            }
+        }
+
+        private static VisualElement GetOpacityTargetElement()
+        {
+            return mapContainer;
+        }
+
+        /// <summary>
         /// Corrects the directional arrow and jersey number orientation when the map container is rotated -90 degrees.
         /// UIMinimap.Update runs right before our Postfix and sets the vanilla rotation angle on the icon/children.
         /// </summary>
         private static void AdjustPlayerIconRotation(VisualElement playerIcon, object tupleVal, Type tupleType, bool isHorizontalMode)
         {
+            var label = playerIcon.Q<Label>();
+
             if (!isHorizontalMode)
             {
-                // When not rotated, let UIMinimap.Update's own rotations stand untouched
+                // Ensure label rotation is cleared if we switched back from horizontal mode
+                if (label != null && label.style.rotate.keyword != StyleKeyword.Null)
+                {
+                    label.style.rotate = new StyleRotate(StyleKeyword.Null);
+                }
                 return;
             }
 
-            // Check if UIMinimap rotates a child element (like the directional cone) or Item2
             var item2Field = tupleType.GetField("Item2");
             var item2El = item2Field?.GetValue(tupleVal) as VisualElement;
 
-            // If there is a text Label (jersey number), keep it upright (+90 deg to cancel container's -90 deg)
-            var label = playerIcon.Q<Label>();
             if (label != null)
             {
                 label.style.rotate = new StyleRotate(new Rotate(new Angle(90f, AngleUnit.Degree)));
             }
 
-            // If UIMinimap.Update rotated item2El (or a non-Label child) for the directional indicator,
-            // it already inherits mapContainer's -90 deg rotation ONLY if its parent is mapContainer.
-            // However, if UIMinimap counter-rotates or sets world-to-screen angles assuming a vertical rink,
-            // we check if playerIcon itself or item2El holds the heading rotation:
             if (item2El != null && item2El != label)
             {
-                // If item2El is the rotation cone and UIMinimap set its angle, let it inherit the parent's -90 deg,
-                // OR if it was counter-rotated by the game, offset it by -90f:
                 float gameAngle = item2El.style.rotate.value.angle.value;
-                // Only adjust if playerIcon itself was counter-rotated
                 if (Mathf.Abs(playerIcon.style.rotate.value.angle.value) > 0.01f)
                 {
                     item2El.style.rotate = new StyleRotate(new Rotate(new Angle(gameAngle, AngleUnit.Degree)));
@@ -363,7 +405,6 @@ namespace MapHack
 
             if (sampleIcon != null && sampleIcon.parent != null)
             {
-                // Use the direct rink element that holds the icons so rotating it rotates all icons and arrows together!
                 mapContainer = sampleIcon.parent;
             }
             else
@@ -382,24 +423,46 @@ namespace MapHack
                 }
             }
 
-            if (mapContainer != null && !originalStyleCaptured)
+            if (mapContainer != null)
             {
-                origPosition = mapContainer.style.position;
-                origLeft = mapContainer.style.left;
-                origRight = mapContainer.style.right;
-                origTop = mapContainer.style.top;
-                origBottom = mapContainer.style.bottom;
-                origMarginLeft = mapContainer.style.marginLeft;
-                origMarginRight = mapContainer.style.marginRight;
-                origMarginTop = mapContainer.style.marginTop;
-                origMarginBottom = mapContainer.style.marginBottom;
-                origTranslate = mapContainer.style.translate;
-                origRotate = mapContainer.style.rotate;
-                origScale = mapContainer.style.scale;
-                origOpacity = mapContainer.style.opacity;
-                originalStyleCaptured = true;
+                isCustomLayoutActive = false;
+                isProximityFadeActive = false;
                 ForceRefreshLayout();
             }
+        }
+
+        private static void CaptureVanillaLayoutSnapshot()
+        {
+            if (mapContainer == null) return;
+            origPosition     = mapContainer.style.position;
+            origLeft         = mapContainer.style.left;
+            origRight        = mapContainer.style.right;
+            origTop          = mapContainer.style.top;
+            origBottom       = mapContainer.style.bottom;
+            origMarginLeft   = mapContainer.style.marginLeft;
+            origMarginRight  = mapContainer.style.marginRight;
+            origMarginTop    = mapContainer.style.marginTop;
+            origMarginBottom = mapContainer.style.marginBottom;
+            origTranslate    = mapContainer.style.translate;
+            origRotate       = mapContainer.style.rotate;
+            origScale        = mapContainer.style.scale;
+        }
+
+        private static void RestoreVanillaLayoutSnapshot()
+        {
+            if (mapContainer == null) return;
+            mapContainer.style.position     = origPosition;
+            mapContainer.style.left         = origLeft;
+            mapContainer.style.right        = origRight;
+            mapContainer.style.top          = origTop;
+            mapContainer.style.bottom       = origBottom;
+            mapContainer.style.marginLeft   = origMarginLeft;
+            mapContainer.style.marginRight  = origMarginRight;
+            mapContainer.style.marginTop    = origMarginTop;
+            mapContainer.style.marginBottom = origMarginBottom;
+            mapContainer.style.translate    = origTranslate;
+            mapContainer.style.rotate       = origRotate;
+            mapContainer.style.scale        = origScale;
         }
 
         private static void UpdateMapLayoutAndGhost(string mode, Dictionary<Puck, VisualElement> puckMap, IDictionary playerMap)
@@ -409,71 +472,70 @@ namespace MapHack
             bool ghost = ModConfig.Config.GhostMode;
             float ghostAlpha = ModConfig.Config.GhostBackgroundAlpha;
 
-            if (mode != lastAppliedMode || customScale != lastAppliedMapScale || offset != lastAppliedOffset)
+            if (mode == "vanilla")
             {
+                // Only restore once when transitioning from a custom mode back to "vanilla".
+                // When already in "vanilla", we never touch layout styles so vanilla position/size settings work freely.
+                if (isCustomLayoutActive)
+                {
+                    RestoreVanillaLayoutSnapshot();
+                    isCustomLayoutActive = false;
+                }
+                lastAppliedMode = "vanilla";
+            }
+            else if (mode != lastAppliedMode || customScale != lastAppliedMapScale || offset != lastAppliedOffset)
+            {
+                // Capture the current vanilla layout right before we transition out of vanilla mode
+                if (!isCustomLayoutActive)
+                {
+                    CaptureVanillaLayoutSnapshot();
+                    isCustomLayoutActive = true;
+                }
+
                 SetPickingModeRecursive(mapContainer, PickingMode.Ignore);
 
-                if (mode == "vanilla")
+                if (mapContainer.parent != null && mapContainer.parent.name != "Root")
                 {
-                    mapContainer.style.position = origPosition;
-                    mapContainer.style.left = origLeft;
-                    mapContainer.style.right = origRight;
-                    mapContainer.style.top = origTop;
-                    mapContainer.style.bottom = origBottom;
-                    mapContainer.style.marginLeft = origMarginLeft;
-                    mapContainer.style.marginRight = origMarginRight;
-                    mapContainer.style.marginTop = origMarginTop;
-                    mapContainer.style.marginBottom = origMarginBottom;
-                    mapContainer.style.translate = origTranslate;
-                    mapContainer.style.rotate = origRotate;
-                    mapContainer.style.scale = origScale;
+                    mapContainer.parent.pickingMode = PickingMode.Ignore;
                 }
-                else
+
+                mapContainer.style.position = Position.Absolute;
+                mapContainer.style.marginLeft = 0;
+                mapContainer.style.marginRight = 0;
+                mapContainer.style.marginTop = 0;
+                mapContainer.style.marginBottom = 0;
+                mapContainer.style.right = StyleKeyword.Auto;
+                mapContainer.style.bottom = StyleKeyword.Auto;
+
+                if (mode == "center")
                 {
-                    // Ensure parent container doesn't offset us to the right bezel
-                    if (mapContainer.parent != null && mapContainer.parent.name != "Root")
-                    {
-                        mapContainer.parent.pickingMode = PickingMode.Ignore;
-                    }
-
-                    mapContainer.style.position = Position.Absolute;
-                    mapContainer.style.marginLeft = 0;
-                    mapContainer.style.marginRight = 0;
-                    mapContainer.style.marginTop = 0;
-                    mapContainer.style.marginBottom = 0;
-                    mapContainer.style.right = StyleKeyword.Auto;
-                    mapContainer.style.bottom = StyleKeyword.Auto;
-
-                    if (mode == "center")
-                    {
-                        mapContainer.style.left = new StyleLength(new Length(50f, LengthUnit.Percent));
-                        mapContainer.style.top = new StyleLength(new Length(50f, LengthUnit.Percent));
-                        mapContainer.style.translate = new StyleTranslate(new Translate(
-                            new Length(-50f + offset.x, LengthUnit.Percent),
-                            new Length(-50f + offset.y, LengthUnit.Percent), 0));
-                        mapContainer.style.rotate = new StyleRotate(new Rotate(new Angle(0f, AngleUnit.Degree)));
-                        mapContainer.style.scale = new StyleScale(new Scale(new Vector2(customScale, customScale)));
-                    }
-                    else if (mode == "top")
-                    {
-                        mapContainer.style.left = new StyleLength(new Length(50f, LengthUnit.Percent));
-                        mapContainer.style.top = new StyleLength(new Length(16f, LengthUnit.Percent));
-                        mapContainer.style.translate = new StyleTranslate(new Translate(
-                            new Length(-50f + offset.x, LengthUnit.Percent),
-                            new Length(-50f + offset.y, LengthUnit.Percent), 0));
-                        mapContainer.style.rotate = new StyleRotate(new Rotate(new Angle(-90f, AngleUnit.Degree)));
-                        mapContainer.style.scale = new StyleScale(new Scale(new Vector2(customScale, customScale)));
-                    }
-                    else if (mode == "bottom")
-                    {
-                        mapContainer.style.left = new StyleLength(new Length(50f, LengthUnit.Percent));
-                        mapContainer.style.top = new StyleLength(new Length(84f, LengthUnit.Percent));
-                        mapContainer.style.translate = new StyleTranslate(new Translate(
-                            new Length(-50f + offset.x, LengthUnit.Percent),
-                            new Length(-50f + offset.y, LengthUnit.Percent), 0));
-                        mapContainer.style.rotate = new StyleRotate(new Rotate(new Angle(-90f, AngleUnit.Degree)));
-                        mapContainer.style.scale = new StyleScale(new Scale(new Vector2(customScale, customScale)));
-                    }
+                    mapContainer.style.left = new StyleLength(new Length(50f, LengthUnit.Percent));
+                    mapContainer.style.top = new StyleLength(new Length(50f, LengthUnit.Percent));
+                    mapContainer.style.translate = new StyleTranslate(new Translate(
+                        new Length(-50f + offset.x, LengthUnit.Percent),
+                        new Length(-50f + offset.y, LengthUnit.Percent), 0));
+                    mapContainer.style.rotate = new StyleRotate(new Rotate(new Angle(0f, AngleUnit.Degree)));
+                    mapContainer.style.scale = new StyleScale(new Scale(new Vector2(customScale, customScale)));
+                }
+                else if (mode == "top")
+                {
+                    mapContainer.style.left = new StyleLength(new Length(50f, LengthUnit.Percent));
+                    mapContainer.style.top = new StyleLength(new Length(16f, LengthUnit.Percent));
+                    mapContainer.style.translate = new StyleTranslate(new Translate(
+                        new Length(-50f + offset.x, LengthUnit.Percent),
+                        new Length(-50f + offset.y, LengthUnit.Percent), 0));
+                    mapContainer.style.rotate = new StyleRotate(new Rotate(new Angle(-90f, AngleUnit.Degree)));
+                    mapContainer.style.scale = new StyleScale(new Scale(new Vector2(customScale, customScale)));
+                }
+                else if (mode == "bottom")
+                {
+                    mapContainer.style.left = new StyleLength(new Length(50f, LengthUnit.Percent));
+                    mapContainer.style.top = new StyleLength(new Length(84f, LengthUnit.Percent));
+                    mapContainer.style.translate = new StyleTranslate(new Translate(
+                        new Length(-50f + offset.x, LengthUnit.Percent),
+                        new Length(-50f + offset.y, LengthUnit.Percent), 0));
+                    mapContainer.style.rotate = new StyleRotate(new Rotate(new Angle(-90f, AngleUnit.Degree)));
+                    mapContainer.style.scale = new StyleScale(new Scale(new Vector2(customScale, customScale)));
                 }
 
                 lastAppliedMode = mode;
@@ -613,14 +675,12 @@ namespace MapHack
         {
             if (mapContainer == null || mapContainer.panel == null) return false;
 
-            // 1. Check if the minimap itself is hidden (e.g., on the Main Menu)
             for (VisualElement el = mapContainer; el != null; el = el.parent)
             {
                 if (el.resolvedStyle.display == DisplayStyle.None || el.resolvedStyle.visibility == Visibility.Hidden)
                     return false;
             }
 
-            // 2. Check Netcode connection state or active entities on the rink
             var net = Unity.Netcode.NetworkManager.Singleton;
             bool netActive = net != null && (net.IsClient || net.IsServer || net.IsConnectedClient || net.IsListening);
             bool hasEntities = (puckMap != null && puckMap.Count > 0) || (playerMap != null && playerMap.Count > 0);
